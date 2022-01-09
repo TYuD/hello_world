@@ -16,7 +16,7 @@ void main()
 
   #elif CHAR_BIT == 32
 
-    const size_t N = 6;
+    const size_t N = 4;
 
     char src[N] = { '\x00000000','\xA0000000','\xBCDE1234','\x00000000' };
     char dst[N] = { '\xFFFFFFFF','\xFFFFFFFF','\xFFFFFFFF','\xFFFFFFFF' };
