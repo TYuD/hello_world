@@ -25,8 +25,6 @@ static inline size_t nunavutChooseMin(const size_t a, const size_t b)
 // ----------------------------------------------------
 static inline void nunavutCopyBits(void* const dst, const size_t dst_offset_bits, const size_t length_bits, const void* const src, const size_t src_offset_bits)
 {
-    unsigned ch_shift = CHAR_SHIFT;
-    unsigned ch_mask  = UCHAR_MAX ;
     if (0 == (src_offset_bits & CHAR_SHIFT_MASK) && 0 == (dst_offset_bits & CHAR_SHIFT_MASK))  // Aligned copy, optimized, most common case.
     {
         const size_t length_chars = size_t(length_bits >> CHAR_SHIFT);
