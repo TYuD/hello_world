@@ -1,6 +1,8 @@
 #ifndef SERIALIZATION_2_H
 #define SERIALIZATION_2_H
 //-----------------------------------------------------------------------------
+#include <stdint.h>
+#include <stdbool.h>
 #include <string.h>
 #include <limits.h>
 //-----------------------------------------------------------------------------
@@ -19,6 +21,10 @@
 #define CHAR_SHIFT_MASK  ((1u << CHAR_SHIFT) - 1u)
 #define NUNAVUT_SUCCESS 0
 //-----------------------------------------------------------------------------
+#define NUNAVUT_SUPPORT_LANGUAGE_OPTION_TARGET_ENDIANNESS 434322821
+#define NUNAVUT_SUPPORT_LANGUAGE_OPTION_OMIT_FLOAT_SERIALIZATION_SUPPORT 0
+#define NUNAVUT_SUPPORT_LANGUAGE_OPTION_ENABLE_SERIALIZATION_ASSERTS 1
+#define NUNAVUT_SUPPORT_LANGUAGE_OPTION_ENABLE_OVERRIDE_VARIABLE_ARRAY_CAPACITY 0
 // API usage errors:
 #define NUNAVUT_ERROR_INVALID_ARGUMENT                  2
 #define NUNAVUT_ERROR_SERIALIZATION_BUFFER_TOO_SMALL    3
@@ -33,7 +39,7 @@ static inline size_t nunavutChooseMin(const size_t a, const size_t b)
 }
 static inline size_t nunavutSaturateBufferFragmentBitLength(const size_t buf_size_chars, const size_t fragment_offset_bits, const size_t fragment_length_bits)
 {
-    const size_t size_bits = size_t(buf_size_chars * CHAR_BIT);
+    const size_t size_bits = (size_t)(buf_size_chars * CHAR_BIT);
     const size_t tail_bits = size_bits - nunavutChooseMin(size_bits, fragment_offset_bits);
     return nunavutChooseMin(fragment_length_bits, tail_bits);
 }
@@ -42,7 +48,7 @@ static inline void nunavutCopyBits(void* const dst, const size_t dst_offset_bits
 {
     if (0 == (src_offset_bits & CHAR_SHIFT_MASK) && 0 == (dst_offset_bits & CHAR_SHIFT_MASK))  // Aligned copy, optimized, most common case.
     {
-        const size_t length_chars = size_t(length_bits >> CHAR_SHIFT);
+        const size_t length_chars = (size_t)(length_bits >> CHAR_SHIFT);
         const char* const psrc    = (src_offset_bits >> CHAR_SHIFT) + (const char*)src;
         char*       const pdst    = (dst_offset_bits >> CHAR_SHIFT) + (      char*)dst;
         memmove(pdst, psrc, length_chars);
@@ -52,7 +58,7 @@ static inline void nunavutCopyBits(void* const dst, const size_t dst_offset_bits
         const char* const last_src = psrc + length_chars;
         char* const       last_dst = pdst + length_chars;
         const unsigned    mask     = (1u << length_mod) - 1;
-        *last_dst = (*last_dst & unsigned(~mask)) | (*last_src & mask);
+        *last_dst = (*last_dst & (unsigned)(~mask)) | (*last_src & mask);
         return;
     }
     const char* const psrc     = (const char*)src;
@@ -67,13 +73,22 @@ static inline void nunavutCopyBits(void* const dst, const size_t dst_offset_bits
         const unsigned max_mod = src_mod > dst_mod ? src_mod : dst_mod;
         const unsigned size    = nunavutChooseMin(CHAR_BIT - max_mod, last_bit - src_off);
         const unsigned mask    = (((1u << size) - 1) << dst_mod) & UCHAR_MAX;
-        const unsigned in      = (unsigned(psrc[src_off >> CHAR_SHIFT] >> src_mod) << dst_mod) & UCHAR_MAX;
+        const unsigned in      = ((unsigned)(psrc[src_off >> CHAR_SHIFT] >> src_mod) << dst_mod) & UCHAR_MAX;
         const unsigned a       = pdst[dst_off >> CHAR_SHIFT] & (~mask);
         const unsigned b       = in & mask;
         pdst[dst_off >> CHAR_SHIFT] = a | b;
         src_off += size;
         dst_off += size;
     }
+}
+//-----------------------------------------------------------------------------
+static inline void nunavutGetBits(void* const output, const void* const buf, const size_t buf_size_chars, const size_t off_bits, const size_t len_bits)
+{
+    const size_t sat_bits = nunavutSaturateBufferFragmentBitLength(buf_size_chars, off_bits, len_bits);
+    // Apply implicit zero extension. Normally, this is a no-op unless (len_bits > sat_bits) or (len_bits % 8 != 0).
+    // The former case ensures that if we're copying <8 bits, the MSB in the destination will be zeroed out.
+    (void) memset(((char*)output) + (sat_bits >> CHAR_SHIFT), 0, ((len_bits + 7U) >> CHAR_SHIFT) - (sat_bits >> CHAR_SHIFT));
+    nunavutCopyBits(output, 0U, sat_bits, buf, off_bits);
 }
 //-----------------------------------------------------------------------------
 static inline int nunavutSetBit( void* const buf, const size_t buf_size_chars, const size_t off_bits, const bool value )
@@ -96,7 +111,7 @@ static inline int nunavutSetUxx( void* const buf, const size_t buf_size_chars, c
 //-----------------------------------------------------------------------------
 static inline int nunavutSetIxx( void* const buf, const size_t buf_size_chars, const size_t off_bits, const int64_t value, const size_t len_bits)
 {
-    return nunavutSetUxx(buf, buf_size_chars, off_bits, uint64_t(value), len_bits);
+    return nunavutSetUxx(buf, buf_size_chars, off_bits, (uint64_t)value, len_bits);
 }
 //-----------------------------------------------------------------------------
 static inline uint_fast8_t nunavutGetU8(const void* const buf, const size_t buf_size_chars, const size_t off_bits, const size_t len_bits)
@@ -134,6 +149,51 @@ static inline uint64_t nunavutGetU64(const void* const buf, const size_t buf_siz
     uint64_t val = 0U;
     nunavutCopyBits(&val, 0U, bits, buf, off_bits);
     return val;
+}
+//-----------------------------------------------------------------------------
+static inline int_fast8_t nunavutGetI8(const void* const buf, const size_t buf_size_chars, const size_t off_bits, const size_t len_bits)
+{
+    const size_t      sat = nunavutChooseMin(len_bits,8U);
+    const int_fast8_t val = nunavutGetU8(buf, buf_size_chars, off_bits, sat);
+    const int         off = sizeof(int_fast8_t)*CHAR_BIT - sat;
+    return (int_fast8_t)(val << off) >> off;
+
+    //const bool    neg = (sat > 0U) && ((val & (1ULL << (sat - 1U))) != 0U);
+    //val = ((sat < 8U) && neg) ? (uint8_t)(val | ~((1U << sat) - 1U)) : val;  // Sign extension
+    //return neg ? (int8_t)((-(int8_t)(uint8_t) ~val) - 1) : (int8_t) val;
+}
+//-----------------------------------------------------------------------------
+static inline int_fast16_t nunavutGetI16(const void* const buf, const size_t buf_size_chars, const size_t off_bits, const size_t len_bits)
+{
+    const size_t       sat = nunavutChooseMin(len_bits, 16U);
+    const int_fast16_t val = nunavutGetU16(buf, buf_size_chars, off_bits, sat);
+    const int          off = sizeof(int_fast16_t)*CHAR_BIT - sat;
+    return (int_fast16_t)(val << off) >> off;
+    //const bool    neg = (sat > 0U) && ((val & (1ULL << (sat - 1U))) != 0U);
+    //val = ((sat < 16U) && neg) ? (uint16_t)(val | ~((1U << sat) - 1U)) : val;  // Sign extension
+    //return neg ? (int16_t)((-(int16_t)(uint16_t) ~val) - 1) : (int16_t) val;
+}
+
+static inline int_fast32_t nunavutGetI32(const void* const buf, const size_t buf_size_chars, const size_t off_bits, const size_t len_bits)
+{
+    const size_t       sat = nunavutChooseMin(len_bits, 32U);
+    const int_fast32_t val = nunavutGetU32(buf, buf_size_chars, off_bits, sat);
+    const int          off = sizeof(int_fast32_t)*CHAR_BIT - sat;
+    return (int_fast32_t)(val << off) >> off;
+    //const bool    neg = (sat > 0U) && ((val & (1ULL << (sat - 1U))) != 0U);
+    //val = ((sat < 32U) && neg) ? (uint32_t)(val | ~((1UL << sat) - 1U)) : val;  // Sign extension
+    //return neg ? (int32_t)((-(int32_t) ~val) - 1) : (int32_t) val;
+}
+
+static inline int64_t nunavutGetI64(const void* const buf, const size_t buf_size_chars, const size_t off_bits, const size_t len_bits)
+{
+    const size_t   sat = nunavutChooseMin(len_bits, 64U);
+    const int64_t  val = nunavutGetU64(buf, buf_size_chars, off_bits, sat);
+    const int      off = sizeof(int64_t)*CHAR_BIT - sat;
+    return (int64_t)(val << off) >> off;
+    //const bool    neg = (sat > 0U) && ((val & (1ULL << (sat - 1U))) != 0U);
+    //val = ((sat < 64U) && neg) ? (uint64_t)(val | ~((1ULL << sat) - 1U)) : val;  // Sign extension
+    //return neg ? (int64_t)((-(int64_t) ~val) - 1) : (int64_t) val;
 }
 //-----------------------------------------------------------------------------
 static inline int nunavutSetF32(void* const buf, const size_t buf_size_chars, const size_t off_bits, const float value)
@@ -187,16 +247,16 @@ static inline uint_fast16_t nunavutFloat16Pack(const float value)
         uint_fast32_t bits;
         float real;
     } Float32Bits;
-    const uint_fast32_t round_mask = ~uint_fast32_t(0x0FFFU);
+    const uint_fast32_t round_mask = ~(uint_fast32_t)(0x0FFFU);
     Float32Bits f32inf;
     Float32Bits f16inf;
     Float32Bits magic;
     Float32Bits in;
-    f32inf.bits = uint_fast32_t(255U) << 23U;
-    f16inf.bits = uint_fast32_t( 31U) << 23U;
-    magic.bits  = uint_fast32_t( 15U) << 23U;
+    f32inf.bits = (uint_fast32_t)(255U) << 23U;
+    f16inf.bits = (uint_fast32_t)( 31U) << 23U;
+    magic.bits  = (uint_fast32_t)( 15U) << 23U;
     in.real = value;
-    const uint_fast32_t sign = in.bits & (uint_fast32_t(1U) << 31U);
+    const uint_fast32_t sign = in.bits & ((uint_fast32_t)(1U) << 31U);
     in.bits ^= sign;
     uint_fast16_t out = 0;
     if (in.bits >= f32inf.bits)
@@ -208,9 +268,9 @@ static inline uint_fast16_t nunavutFloat16Pack(const float value)
         in.bits -= round_mask;
         if (in.bits > f16inf.bits)
             in.bits = f16inf.bits;
-        out = uint_fast16_t(in.bits >> 13U);
+        out = (uint_fast16_t)(in.bits >> 13U);
     }
-    out |= uint_fast16_t(sign >> 16U);
+    out |= (uint_fast16_t)(sign >> 16U);
     return out;
 }
 //-----------------------------------------------------------------------------
@@ -224,13 +284,13 @@ static inline float nunavutFloat16Unpack(const uint_fast16_t value)
     Float32Bits magic;
     Float32Bits inf_nan;
     Float32Bits out;
-    magic.bits   = uint_fast32_t(0xEFU) << 23U;
-    inf_nan.bits = uint_fast32_t(0x8FU) << 23U;
-    out.bits     = uint_fast32_t(value & 0x7FFFU) << 13U;
+    magic.bits   = (uint_fast32_t)(0xEFU) << 23U;
+    inf_nan.bits = (uint_fast32_t)(0x8FU) << 23U;
+    out.bits     = (uint_fast32_t)(value & 0x7FFFU) << 13U;
     out.real    *= magic.real;
     if (out.real >= inf_nan.real)
-        out.bits |= uint_fast32_t(0xFFU) << 23U;
-    out.bits |= uint_fast32_t(value & 0x8000U) << 16U;
+        out.bits |= (uint_fast32_t)(0xFFU) << 23U;
+    out.bits |= (uint_fast32_t)(value & 0x8000U) << 16U;
     return out.real;
 }
 //-----------------------------------------------------------------------------
